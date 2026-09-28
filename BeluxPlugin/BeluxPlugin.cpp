@@ -437,7 +437,7 @@ void BeluxPlugin::OnGetTagItem(CFlightPlan FlightPlan, CRadarTarget RadarTarget,
 			{
 				// yes yes no rounding idc
 				// width set to 3, because the sign is counted as a digit...
-				sprintf_s(sItemString, 16, "%+03d", val / 100);
+				snprintf(sItemString, 16, "%+03d", val / 100);
 			}
 		}
 		break;
