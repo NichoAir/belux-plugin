@@ -423,6 +423,7 @@ void BeluxPlugin::OnGetTagItem(CFlightPlan FlightPlan, CRadarTarget RadarTarget,
                                char sItemString[16], int* pColorCode,
                                COLORREF* pRGB, double* pFontSize)
 {
+	const size_t buf_size = 16;
 	// Only work on tag items we actually care about.
 	switch (ItemCode)
 	{
@@ -437,7 +438,7 @@ void BeluxPlugin::OnGetTagItem(CFlightPlan FlightPlan, CRadarTarget RadarTarget,
 			{
 				// yes yes no rounding idc
 				// width set to 3, because the sign is counted as a digit...
-				snprintf(sItemString, 16, "%+03d", val / 100);
+				snprintf(sItemString, buf_size, "%+03d", val / 100);
 			}
 		}
 		break;
@@ -490,7 +491,7 @@ void BeluxPlugin::OnGetTagItem(CFlightPlan FlightPlan, CRadarTarget RadarTarget,
 				const string gateItem = gatePlanner.gate_list[cs].gate + (gatePlanner.gate_list[cs].suggest25R
 					                                                          ? "*"
 					                                                          : "");
-				strcpy_s(sItemString, 8, gateItem.c_str());
+				strncpy_s(sItemString,buf_size, gateItem.c_str(), buf_size - 1);
 			}
 		}
 		break;
@@ -520,14 +521,13 @@ void BeluxPlugin::OnGetTagItem(CFlightPlan FlightPlan, CRadarTarget RadarTarget,
 
 
 			const string text = suggestion.sid + "/" + suggestion.rwy;
-			strcpy_s(sItemString, 16, text.c_str());
-			sItemString[15] = '\0'; // Ensure proper null termination
+			strncpy_s(sItemString, buf_size, text.c_str(), buf_size - 1);
 		}
 		break;
 	}
 }
 
-string BeluxPlugin::GetAirportInfo(string airport)
+string BeluxPlugin::GetAirportInfo(const string& airport)
 {
 	const string host = "metar.vatsim.net";
 	const string uri = "/search_metar.php?id=" + airport;

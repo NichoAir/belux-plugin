@@ -18,7 +18,7 @@
 
 
 #define MY_PLUGIN_NAME      "Belux"
-#define MY_PLUGIN_VERSION   "1.6.2"
+#define MY_PLUGIN_VERSION   "1.6.3"
 #define MY_PLUGIN_DEVELOPER "Nicola Macoir, Stef Pletinck for Belux vACC"
 #define MY_PLUGIN_COPYRIGHT "GPL v3"
 #define MY_PLUGIN_VIEW_AVISO  "Belux vACC"
@@ -87,7 +87,7 @@ protected:
 
 	string GetHttpsRequest(string host, string uri, string request, bool expect_long_json);
 	string GetGateInfo();
-	string GetAirportInfo(string airport);
+	string GetAirportInfo(const string& airport);
 	string GetLatestPluginVersion();
 	string SwapGate(string callsign, string gate);
 	void ProcessMETAR(string airport, string metar);
