@@ -3,6 +3,11 @@
 #include "BeluxGatePlanner.hpp"
 #include "ProcedureAssigner.h"
 #include "BeluxUtil.hpp"
+#include "BeluxSync.hpp"
+#include "BeluxScreen.hpp"
+#include <chrono>
+#include <optional>
+#include <deque>
 #include <time.h>
 #include <vector>
 #include <boost/asio.hpp>
@@ -44,6 +49,31 @@ enum TagDefinitions: int {
 	function_force_sid,
 	item_proc_suggestion,
 	vspeed,
+	item_intersection_able,
+	item_intersection_cleared,
+	function_intersection_set,
+	function_intersection_able,
+	function_intersection_set_pick, // popup list entries / custom edit result, not registered as tag functions
+	function_intersection_able_pick,
+	item_request,
+	item_request_timer,
+	function_request_menu,
+	function_request_pick, // popup list entries, not registered as tag function
+};
+
+/** Ground / GroundRadar statuses, same set as the "Sync" plugin tracks. */
+enum class BeluxGroundStatus
+{
+	NoState,
+	OnFreq,
+	Stby, // GroundRadar "DE-ICE"
+	Stup,
+	Push,
+	Taxi,
+	Lineup,
+	Takeoff,
+	TaxiIn,
+	Parked,
 };
 
 class BeluxPlugin :
@@ -60,6 +90,12 @@ public:
 	virtual bool OnCompileCommand(const char* sCommandLine);
 	virtual void OnTimer(int Counter);
 	virtual void OnAirportRunwayActivityChanged(void);
+	virtual void OnFlightPlanControllerAssignedDataUpdate(CFlightPlan FlightPlan, int DataType);
+	virtual CRadarScreen* OnRadarScreenCreated(const char* sDisplayName, bool NeedRadarContent, bool GeoReferenced,
+	                                           bool CanBeSaved, bool CanBeCreated);
+
+	void registerScreen(BeluxScreen* screen) { screens.insert(screen); }
+	void unregisterScreen(BeluxScreen* screen) { screens.erase(screen); }
 
 
 protected:
@@ -80,6 +116,49 @@ protected:
 	BeluxUtil utils;
 	ProcedureAssigner* procedureAssigner;
 
+	// ---- runway intersections (holding points) ---------------------------------------------------------------
+	map<string, pair<string, string>> intersections; // callsign -> (able intersection, cleared intersection)
+	map<string, map<string, vector<string>>> intersectionList; // icao -> rwy -> selectable intersections (config)
+	COLORREF intersectionAbleColor = RGB(255, 220, 0);
+	COLORREF intersectionSetColor = RGB(0, 220, 0);
+
+	// ---- shared requests (IFR clearance, startup, pushback, taxi, ...) ---------------------------------------
+	struct Request
+	{
+		string type; // clearance, startup, pushback, taxi, departure, vfr
+		char letter = '?'; // shown in the tag item, e.g. S2 = 2nd in the startup queue
+		long long time = 0; // request time (unix seconds)
+		string adep;
+	};
+	map<string, Request> requests; // callsign -> pending request
+	int request_caution_minutes = 5;
+	int request_warning_minutes = 10;
+
+	// ---- tracked clearance flags / ground states, replayed by .belux sync (like the "Sync" plugin) ---------
+	// ES doesn't keep GroundRadar statuses, so every change has to be remembered when it arrives
+	struct GroundTrack
+	{
+		bool cleared = false;
+		optional<BeluxGroundStatus> status;
+	};
+	map<string, GroundTrack> groundTrack;
+
+	// ---- auto mode -----------------------------------------------------------------------------------------
+	set<string> autoAirports; // airports with active auto mode (always only airports where we are the lowest station)
+	bool wasConnected = false; // to detect the moment the client disconnects
+	bool autoStartupPending = false; // config "rwy_sid_assigner": enable as soon as we are connected as controller
+	/** icao -> (callsign -> facility) of all other controllers whose callsign starts with that icao */
+	map<string, map<string, int>> airportControllers;
+
+	// ---- sync / squawk -------------------------------------------------------------------------------------
+	BeluxSync sync;
+	set<BeluxScreen*> screens;
+	bool ccamsLoaded = false;
+	bool noScreenWarned = false;
+	deque<string> squawkQueue;
+	map<string, chrono::steady_clock::time_point> squawkRequested;
+	chrono::steady_clock::time_point lastSquawkTP{};
+
 	map<string, vector<string>> activeDepRunways;
 	map<string, vector<string>> activeArrRunways;
 
@@ -99,6 +178,41 @@ protected:
 	void FetchAndProcessGates();
 	void versionCheck();
 	void loadJSONconfig();
+
+	// auto mode
+	bool isMyselfController();
+	void refreshControllers();
+	bool hasLowerAtc(const string& icao, bool toActivate);
+	bool enableAuto(const string& icao);
+	void enableAutoAll();
+	void applyStartupAuto();
+	void handleDisconnect();
+	void enforceLowestStation();
+	bool isAutoActive(const string& icao) const { return autoAirports.contains(icao); }
+	void autoProcess(CFlightPlan& fp, const string& adep);
+	void onAutoMarker(CFlightPlan& fp, const string& sender);
+	void handleAutoCommand(const string& commandLine);
+
+	// squawk (CCAMS)
+	void detectExternalPlugins();
+	bool isGroundAndMine(CFlightPlan& fp);
+	void queueSquawk(CFlightPlan& fp);
+	void processSquawkQueue();
+	bool callCcamsSquawk(const string& callsign);
+
+	// intersections
+	void openIntersectionMenu(CFlightPlan fp, RECT area, bool set);
+	void applyIntersection(CFlightPlan fp, const string& name, bool set);
+
+	// requests
+	void openRequestMenu(CFlightPlan fp, RECT area);
+	void applyRequest(CFlightPlan fp, const string& label);
+	int requestPosition(const string& callsign) const;
+	bool isIfr(CFlightPlan& fp);
+
+	// sync
+	void trackGroundState(CFlightPlan& fp, int dataType);
+	void resyncStates(const set<string>& airports);
 
 	void printDebugMessage(const string& function, const string& message);
 	void printMessage(const string& topic, const string& message);
