@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.7.0
+## 1.7.0 (previous release: 1.6.3)
 
 ### Added
 
@@ -18,8 +18,14 @@
   - Auto mode can't be started if another controller at the same airport has a lower **or equal** facility (DEL < GND < TWR < APP < CTR). Controllers are matched to airports by their `ICAO_` callsign prefix, ATIS/observers are ignored.
   - A running auto mode is switched off automatically as soon as a **lower** station connects, or when the airport is no longer active.
   - If two stations end up in auto mode on the same airport, the higher level backs off. On equal level the alphabetically later callsign backs off.
-- Auto mode is switched off when the client disconnects. Requests, intersections and remembered states are kept; other controllers can re-send changes made in the meantime with `.belux sync`. With `rwy_sid_assigner` set in the config, auto mode starts again after the next connect; otherwise enable it with `.belux auto`.
+- Auto mode is switched off when the client disconnects. Requests, intersections and remembered states are kept; other controllers can re-send changes made in the meantime with `.belux sync`. After a reconnect, enable it again with `.belux auto`.
+- **Stations covering several airports:** a station counts as controller of every airport in its `coverage` entry, not only of the one in its callsign. By default `EBBR_APP` (and `EBBR_*_APP`) covers EBBR, EBAW and EBCI. So a CTR such as `EBBU_W_CTR` can't auto-assign on those airports while the approach is online, and an approach that auto-assigns for EBCI sees `EBCI_TWR` as lower station.
 - After a successful auto assignment a marker (`.BELUX_AUTO_<callsign>`) is sent to the other controllers, who get a chat notice.
+
+#### Tag function "Auto SID + squawk"
+- Does for **one aircraft** what auto mode does: assigns SID/RWY according to the SID assigner and requests a squawk from CCAMS. It works whether or not auto mode is active.
+- Same rules as auto mode: IFR only, SID/RWY unchanged if one is already assigned / clearance given / tracked by someone else, squawk only if none is assigned and the aircraft is on the ground and not tracked by another controller.
+- Works silently, what was done (or why nothing changed) is only shown in debug mode. No marker is sent to other controllers, so it doesn't make other stations leave auto mode.
 
 #### Request tag items (shared between controllers)
 - New tag items **Request** (request letter plus place in the queue, e.g. `S1`) and **Request Timer** (minutes since the request, e.g. `4m`), and the tag function **Request Menu**.
@@ -53,9 +59,11 @@
 #### Radar screen
 - New minimal `BeluxScreen` (draws nothing). EuroScope only lets plugins call tag functions of other plugins through a radar screen, which CCAMS squawk assignment needs. **At least one ASR must be open for automatic squawks.** A chat message is shown once if no screen exists.
 
+### Removed
+- The old automatic RWY/SID assignment: the `rwy_sid_assigner` config flag, the `.belux rwysidon` / `.belux rwysidoff` commands and the automatic activation at startup. Use auto mode (`.belux auto`) or the "Auto SID + squawk" tag function instead.
+- The `.belux force-sid` command and the "Assign RWY/SID" tag function (forced SID/RWY assignment). The "Auto SID + squawk" function replaces the tag function; it doesn't overwrite an existing SID. Tag item / function IDs of the other items are unchanged. `.belux fresh-sid` (clear the SID cache) stays.
+
 ### Changed
-- `rwy_sid_assigner` (config) and `.belux rwysidon` / `.belux rwysidoff` now start and stop **auto mode**. Auto mode honours the lowest-station rule; the old behaviour processed every airport regardless of other controllers. With the config flag set, auto mode starts as soon as you are connected as a controller.
-- `.belux force-sid` and the "force SID" tag function are unchanged and ignore auto mode and the IFR/VFR filter.
 - `ProcessFlightPlans` skips invalid flight plans (previously `GetFlightPlanData()` was called on them).
 - `GetHttpsRequest` updated for Boost 1.87: `boost::asio::io_service` is now `io_context` and `resolver::query` was replaced by `resolver.resolve(host, "https")`.
 - Project: `BeluxSync.cpp/.hpp` and `BeluxScreen.cpp/.hpp` added to `BeluxPlugin.vcxproj` and its filters.
@@ -63,6 +71,10 @@
 ### Configuration (`belux_config.json`, all sections optional)
 
 ```json
+"coverage": {
+    "EBBR_APP": ["EBBR", "EBAW", "EBCI"],
+    "EBBR_*_APP": ["EBBR", "EBAW", "EBCI"]
+},
 "requests": {
     "caution_minutes": 5,
     "warning_minutes": 10
@@ -74,6 +86,7 @@
 }
 ```
 
+- `coverage`: stations that cover other airports than the one in their callsign (`*` works as wildcard in the callsign). If present it replaces the built-in default, which is the entry shown above.
 - `requests`: minutes after which the request timer turns yellow / red. The defaults are guesses and may need adjusting.
 - `intersection.list`: airport, then departure runway, then the intersections offered in the popup. There is no built-in list; without entries only **Custom** and **Clear** are offered.
 - `.belux reload` re-reads both sections.
@@ -81,5 +94,5 @@
 ### Requirements and notes
 - **CCAMS** must be loaded for automatic squawks. Function ID `871` ("auto assign squawk") is the one vSID uses.
 - Build: Boost 1.87 libraries matching the toolset in use (for example `boost_json` and `boost_container` for `vc143`); the project needs the MFC component of the selected toolset.
-- New tag items and functions (add them in the tag editor): Intersection (able), Intersection (cleared), Request, Request Timer, Set runway intersection, Select runway intersection as able, Request Menu.
+- New tag items and functions (add them in the tag editor): Intersection (able), Intersection (cleared), Request, Request Timer, Set runway intersection, Select runway intersection as able, Request Menu, Auto SID + squawk.
 - Belux and vSID can run side by side, since their scratch pad messages use different prefixes.

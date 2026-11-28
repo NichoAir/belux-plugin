@@ -53,6 +53,23 @@ namespace
 		return nullptr;
 	}
 
+	/** Case insensitive match of text against a pattern where * stands for any characters. */
+	bool globMatch(const string& pattern, const string& text)
+	{
+		const auto same = [](char a, char b) { return std::toupper(static_cast<unsigned char>(a)) == std::toupper(static_cast<unsigned char>(b)); };
+
+		size_t p = 0, t = 0, star = string::npos, mark = 0;
+		while (t < text.size())
+		{
+			if (p < pattern.size() && pattern[p] == '*') { star = p++; mark = t; }
+			else if (p < pattern.size() && same(pattern[p], text[t])) { ++p; ++t; }
+			else if (star != string::npos) { p = star + 1; t = ++mark; }
+			else return false;
+		}
+		while (p < pattern.size() && pattern[p] == '*') ++p;
+		return p == pattern.size();
+	}
+
 	struct StatusName
 	{
 		const char* name;
@@ -154,7 +171,7 @@ BeluxPlugin::BeluxPlugin(void) : CPlugIn(EuroScopePlugIn::COMPATIBILITY_CODE, MY
 	RegisterTagItemType("Assigned Gate", TagDefinitions::item_gate_assign);
 	RegisterTagItemFunction("refresh assigned gate", TagDefinitions::function_gate_refresh);
 	RegisterTagItemType("Mach number", TagDefinitions::item_mach_number);
-	RegisterTagItemFunction("Assign RWY/SID", TagDefinitions::function_force_sid);
+	RegisterTagItemFunction("Auto SID + squawk", TagDefinitions::function_auto_assign);
 	RegisterTagItemType("Procedure Suggestion", TagDefinitions::item_proc_suggestion);
 	RegisterTagItemType("VSpeed", TagDefinitions::vspeed);
 	RegisterTagItemType("Intersection (able)", TagDefinitions::item_intersection_able);
@@ -190,12 +207,6 @@ BeluxPlugin::BeluxPlugin(void) : CPlugIn(EuroScopePlugIn::COMPATIBILITY_CODE, MY
 	detectExternalPlugins();
 	refreshControllers();
 
-	if (function_check_runway_and_sid)
-	{
-		// auto mode needs a controller connection and the lowest-station check, so it is applied from OnTimer
-		autoStartupPending = true;
-		printMessage("Functionalities", "Auto mode is requested by the config and will start once you are connected as a controller (only if you are the lowest station). Turn it off with .belux auto");
-	}
 }
 
 BeluxPlugin::~BeluxPlugin()
@@ -322,12 +333,6 @@ void BeluxPlugin::loadJSONconfig()
 				printDebugMessage(
 					"config", "Mach visualisation " + string(function_mach_visualisation ? "enabled" : "disabled"));
 			}
-			if (document["functionalities"].GetObject().HasMember("rwy_sid_assigner"))
-			{
-				function_check_runway_and_sid = document["functionalities"].GetObject()["rwy_sid_assigner"].GetBool();
-				printDebugMessage(
-					"config", "rwy/sid assigner " + string(function_check_runway_and_sid ? "enabled" : "disabled"));
-			}
 		}
 		if (document.HasMember("vspeed"))
 		{
@@ -396,11 +401,7 @@ void BeluxPlugin::ProcessFlightPlans()
 		string dep_airport = fp.GetFlightPlanData().GetOrigin();
 		string callsign = fp.GetCallsign();
 
-		if (force_new_procedure)
-		{
-			procedureAssigner->process_flight_plan(fp, true);
-		}
-		else if (isAutoActive(dep_airport) && isIfr(fp)) // VFR aircraft are never handled by auto mode
+		if (isAutoActive(dep_airport) && isIfr(fp)) // VFR aircraft are never handled by auto mode
 		{
 			// auto mode: SID/RWY (existing suggestion logic) + CCAMS squawk + sync marker
 			autoProcess(fp, dep_airport);
@@ -462,7 +463,6 @@ void BeluxPlugin::ProcessFlightPlans()
 			}
 		}
 	}
-	force_new_procedure = false;
 }
 
 void BeluxPlugin::OnFlightPlanDisconnect(CFlightPlan FlightPlan)
@@ -472,6 +472,7 @@ void BeluxPlugin::OnFlightPlanDisconnect(CFlightPlan FlightPlan)
 		requests.erase(cs);
 		groundTrack.erase(cs);
 		squawkRequested.erase(cs);
+		squawkManual.erase(cs);
 		sync.remove(cs);
 		intersections.erase(cs);
 		squawkQueue.erase(std::remove(squawkQueue.begin(), squawkQueue.end(), cs), squawkQueue.end());
@@ -512,11 +513,8 @@ void BeluxPlugin::OnFunctionCall(int FunctionId, const char* sItemString, POINT 
 		if (function_fetch_gates)
 			FetchAndProcessGates();
 		break;
-	case TagDefinitions::function_force_sid:
-		if (!procedureAssigner->process_flight_plan(FlightPlanSelectASEL(), true))
-		{
-			printMessage("SID", "Failed to assign requested SID/RWY");
-		}
+	case TagDefinitions::function_auto_assign:
+		autoAssign(FlightPlanSelectASEL());
 		break;
 	case TagDefinitions::function_request_menu:
 		openRequestMenu(FlightPlanSelectASEL(), Area);
@@ -562,7 +560,6 @@ void BeluxPlugin::OnTimer(int Counter)
 	if (!ccamsLoaded && Counter % 30 == 0) detectExternalPlugins(); // CCAMS may be loaded after us
 
 	refreshControllers();
-	applyStartupAuto();
 	enforceLowestStation();
 	processSquawkQueue();
 
@@ -1055,7 +1052,6 @@ bool BeluxPlugin::OnCompileCommand(const char* sCommandLine)
 	{
 		printMessage("-", "Belux CLI");
 		printMessage("-", ".belux reload                          - reload json config");
-		printMessage("-", ".belux force-sid                       - force fresh SID/RWY assignment");
 		printMessage("-", ".belux fresh-sid                       - Clear SID cache");
 		printMessage("-", ".belux auto [ICAO ...]                 - toggle auto mode (SID/RWY + CCAMS squawk), lowest station only");
 		printMessage("-", ".belux sync                           - re-send clearance flags, ground states, requests, intersections of the named airports (.belux sync EBBR)");
@@ -1174,22 +1170,6 @@ bool BeluxPlugin::OnCompileCommand(const char* sCommandLine)
 		printDebugMessage("API", "fetched weather file " + utils.fetch_weather_file());
 		return true;
 	}
-	if (boost::algorithm::starts_with(sCommandLine, ".belux rwysidon") || boost::algorithm::starts_with(
-		sCommandLine, ".belux rwysidoff"))
-	{
-		function_check_runway_and_sid = (buffer.erase(0, 13) == "on");
-		autoStartupPending = false;
-		if (function_check_runway_and_sid)
-		{
-			enableAutoAll(); // same as .belux auto for all airports, honours the lowest-station rule
-		}
-		else
-		{
-			autoAirports.clear();
-			printMessage("Functionalities", "Auto mode disabled for all airports");
-		}
-		return true;
-	}
 
 	if (boost::algorithm::starts_with(sCommandLine, ".belux debugon") || boost::algorithm::starts_with(
 			sCommandLine, ".dbgon")
@@ -1221,13 +1201,6 @@ bool BeluxPlugin::OnCompileCommand(const char* sCommandLine)
 	{
 		if (function_fetch_gates)
 			FetchAndProcessGates();
-		return true;
-	}
-
-	if (boost::algorithm::starts_with(sCommandLine, ".belux force-sid"))
-	{
-		procedureAssigner->reprocess_all();
-		force_new_procedure = true;
 		return true;
 	}
 
@@ -1294,8 +1267,16 @@ void BeluxPlugin::refreshControllers()
 		const int facility = c.GetFacility();
 		if (facility < 2) continue; // ATIS / observers / FSS don't count (2 DEL, 3 GND, 4 TWR, 5 APP, 6 CTR)
 
-		if (cs.size() < 5 || cs[4] != '_') continue; // expect ICAO_xxx
-		fresh[cs.substr(0, 4)][cs] = facility;
+		// airports the station covers: the ICAO in its callsign (ICAO_xxx) and everything listed in the built-in coverage list,
+		// e.g. EBBR_APP also covers EBAW and EBCI, so it counts as lower station there
+		if (cs.size() >= 5 && cs[4] == '_') fresh[cs.substr(0, 4)][cs] = facility;
+
+		for (const auto& [pattern, airports] : coverage)
+		{
+			if (!globMatch(pattern, cs)) continue;
+
+			for (const string& airport : airports) fresh[airport][cs] = facility;
+		}
 	}
 
 	airportControllers = std::move(fresh);
@@ -1357,28 +1338,6 @@ bool BeluxPlugin::enableAuto(const string& icao)
 	return true;
 }
 
-void BeluxPlugin::enableAutoAll()
-{
-	string summary;
-	for (const auto& [icao, runways] : activeDepRunways)
-	{
-		if (enableAuto(icao))
-		{
-			if (!summary.empty()) summary += " | ";
-			summary += "[" + icao + "] Automode [ON]";
-		}
-	}
-	if (!summary.empty()) printMessage("Auto", summary);
-}
-
-void BeluxPlugin::applyStartupAuto()
-{
-	if (!autoStartupPending || !isMyselfController()) return;
-
-	autoStartupPending = false;
-	enableAutoAll();
-}
-
 /** The client lost its connection: only auto mode is switched off. Shared data (requests, intersections, ...) is kept. */
 void BeluxPlugin::handleDisconnect()
 {
@@ -1387,9 +1346,6 @@ void BeluxPlugin::handleDisconnect()
 		autoAirports.clear();
 		printMessage("Auto", "Disconnected. Auto mode disabled.");
 	}
-
-	// the config flag starts auto mode again after the next connect, otherwise it has to be enabled manually
-	autoStartupPending = function_check_runway_and_sid;
 }
 
 /** Runs every second: auto mode stops as soon as a lower station shows up or the airport is no longer active. */
@@ -1500,6 +1456,57 @@ void BeluxPlugin::autoProcess(CFlightPlan& fp, const string& adep)
 }
 
 /** Another controller announced an auto assignment. */
+/**
+ * Tag function "Auto SID + squawk": does for one aircraft what auto mode does (SID/RWY according to the SID
+ * assigner, squawk from CCAMS), independent of auto mode being active. No marker is sent to other controllers.
+ */
+void BeluxPlugin::autoAssign(CFlightPlan fp)
+{
+	if (!fp.IsValid()) return;
+
+	const string callsign = fp.GetCallsign();
+	const string adep = fp.GetFlightPlanData().GetOrigin();
+
+	if (!isIfr(fp))
+	{
+		printDebugMessage("AUTO", callsign + ": VFR aircraft are not handled.");
+		return;
+	}
+
+	if (!activeDepRunways.contains(adep))
+	{
+		printDebugMessage("AUTO", callsign + ": [" + adep + "] is not an active departure airport.");
+		return;
+	}
+
+	if (const auto sid = procedureAssigner->process_flight_plan(fp, false); sid.has_value())
+	{
+		printDebugMessage("AUTO", callsign + " assigned " + sid->sid + "/" + sid->rwy);
+	}
+	else
+	{
+		printDebugMessage("AUTO", callsign + ": SID/RWY not changed (already assigned, clearance given, tracked by someone else, not on the ground or no matching SID).");
+	}
+
+	const string squawk = fp.GetControllerAssignedData().GetSquawk();
+
+	if (!(squawk.empty() || squawk == "0000" || squawk == "1234"))
+	{
+		printDebugMessage("AUTO", callsign + ": already has squawk " + squawk + ".");
+	}
+	else if (!ccamsLoaded)
+	{
+		printDebugMessage("AUTO", callsign + ": CCAMS was not detected, no squawk requested.");
+	}
+	else if (!isGroundAndMine(fp))
+	{
+		printDebugMessage("AUTO", callsign + ": no squawk requested (not on the ground or tracked by someone else).");
+	}
+	else
+	{
+		queueSquawk(fp, true);
+	}
+}
 void BeluxPlugin::onAutoMarker(CFlightPlan& fp, const string& sender)
 {
 	auto me = ControllerMyself();
@@ -1515,13 +1522,21 @@ void BeluxPlugin::onAutoMarker(CFlightPlan& fp, const string& sender)
 
 	// Two stations in auto mode for the same airport: the higher level backs off, on equal level the
 	// alphabetically later callsign backs off, so both sides reach the same decision.
-	const auto apt = airportControllers.find(adep);
-	if (apt == airportControllers.end()) return;
-	const auto other = apt->second.find(sender);
-	if (other == apt->second.end()) return;
+	// facility of the sender: from the controller list, otherwise ask ES (a station not listed for this airport)
+	int senderFacility = -1;
+	if (const auto apt = airportControllers.find(adep); apt != airportControllers.end())
+	{
+		if (const auto other = apt->second.find(sender); other != apt->second.end()) senderFacility = other->second;
+	}
+	if (senderFacility < 0)
+	{
+		auto senderController = ControllerSelect(sender.c_str());
+		if (senderController.IsValid()) senderFacility = senderController.GetFacility();
+	}
+	if (senderFacility < 0) return;
 
 	const int myFacility = me.GetFacility();
-	if (other->second < myFacility || (other->second == myFacility && sender < myCallsign))
+	if (senderFacility < myFacility || (senderFacility == myFacility && sender < myCallsign))
 	{
 		autoAirports.erase(adep);
 		printMessage("Auto", "[" + adep + "] Disabling auto mode. " + sender + " is already running auto mode.");
@@ -1559,7 +1574,7 @@ void BeluxPlugin::detectExternalPlugins()
 	}
 }
 
-void BeluxPlugin::queueSquawk(CFlightPlan& fp)
+void BeluxPlugin::queueSquawk(CFlightPlan& fp, bool manual)
 {
 	if (!ccamsLoaded || !isGroundAndMine(fp)) return;
 
@@ -1570,8 +1585,13 @@ void BeluxPlugin::queueSquawk(CFlightPlan& fp)
 	const auto now = chrono::steady_clock::now();
 
 	// don't spam CCAMS, retry only after a minute if the squawk is still missing
-	if (const auto it = squawkRequested.find(callsign); it != squawkRequested.end() && now - it->second < chrono::seconds(60)) return;
+	// (the manual function ignores this limit)
+	if (!manual)
+	{
+		if (const auto it = squawkRequested.find(callsign); it != squawkRequested.end() && now - it->second < chrono::seconds(60)) return;
+	}
 
+	if (manual) squawkManual.insert(callsign);
 	squawkRequested[callsign] = now;
 	if (std::find(squawkQueue.begin(), squawkQueue.end(), callsign) == squawkQueue.end())
 	{
@@ -1589,11 +1609,12 @@ void BeluxPlugin::processSquawkQueue()
 
 	const string callsign = squawkQueue.front();
 	squawkQueue.pop_front();
+	const bool manual = (squawkManual.erase(callsign) > 0);
 
 	CFlightPlan fp = FlightPlanSelect(callsign.c_str());
 	if (!fp.IsValid() || !isGroundAndMine(fp)) return;
 
-	if (!isAutoActive(fp.GetFlightPlanData().GetOrigin())) return; // auto mode was switched off meanwhile
+	if (!manual && !isAutoActive(fp.GetFlightPlanData().GetOrigin())) return; // auto mode was switched off meanwhile
 
 	const string squawk = fp.GetControllerAssignedData().GetSquawk();
 	if (!(squawk.empty() || squawk == "0000" || squawk == "1234")) return; // someone else was faster

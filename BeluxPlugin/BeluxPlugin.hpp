@@ -46,7 +46,7 @@ enum TagDefinitions: int {
 	item_gate_assign = 1,
 	function_gate_refresh,
 	item_mach_number,
-	function_force_sid,
+	reserved_force_sid, // formerly function_force_sid (removed), kept so the IDs of the other items don't change
 	item_proc_suggestion,
 	vspeed,
 	item_intersection_able,
@@ -59,6 +59,7 @@ enum TagDefinitions: int {
 	item_request_timer,
 	function_request_menu,
 	function_request_pick, // popup list entries, not registered as tag function
+	function_auto_assign,
 };
 
 /** Ground / GroundRadar statuses, same set as the "Sync" plugin tracks. */
@@ -104,8 +105,6 @@ protected:
 	bool function_fetch_gates = true;
 	bool function_set_initial_climb = true;
 	bool function_mach_visualisation = true;
-	bool function_check_runway_and_sid = false;
-	bool force_new_procedure = false;
 	
 	int timeout_value = 1000;
 
@@ -146,9 +145,16 @@ protected:
 	// ---- auto mode -----------------------------------------------------------------------------------------
 	set<string> autoAirports; // airports with active auto mode (always only airports where we are the lowest station)
 	bool wasConnected = false; // to detect the moment the client disconnects
-	bool autoStartupPending = false; // config "rwy_sid_assigner": enable as soon as we are connected as controller
 	/** icao -> (callsign -> facility) of all other controllers whose callsign starts with that icao */
 	map<string, map<string, int>> airportControllers;
+	/**
+	 * Stations that cover other airports than the one in their callsign (pattern with * wildcard -> airports).
+	 * They count as controllers of all listed airports for the lowest-station check. Fixed in the code (add stations here).
+	 */
+	const map<string, vector<string>> coverage = {
+		{ "EBBR_APP", { "EBBR", "EBAW", "EBCI" } },
+		{ "EBBR_*_APP", { "EBBR", "EBAW", "EBCI" } },
+	};
 
 	// ---- sync / squawk -------------------------------------------------------------------------------------
 	BeluxSync sync;
@@ -156,6 +162,7 @@ protected:
 	bool ccamsLoaded = false;
 	bool noScreenWarned = false;
 	deque<string> squawkQueue;
+	set<string> squawkManual; // queued by the manual function, don't need active auto mode
 	map<string, chrono::steady_clock::time_point> squawkRequested;
 	chrono::steady_clock::time_point lastSquawkTP{};
 
@@ -184,19 +191,18 @@ protected:
 	void refreshControllers();
 	bool hasLowerAtc(const string& icao, bool toActivate);
 	bool enableAuto(const string& icao);
-	void enableAutoAll();
-	void applyStartupAuto();
 	void handleDisconnect();
 	void enforceLowestStation();
 	bool isAutoActive(const string& icao) const { return autoAirports.contains(icao); }
 	void autoProcess(CFlightPlan& fp, const string& adep);
+	void autoAssign(CFlightPlan fp);
 	void onAutoMarker(CFlightPlan& fp, const string& sender);
 	void handleAutoCommand(const string& commandLine);
 
 	// squawk (CCAMS)
 	void detectExternalPlugins();
 	bool isGroundAndMine(CFlightPlan& fp);
-	void queueSquawk(CFlightPlan& fp);
+	void queueSquawk(CFlightPlan& fp, bool manual = false);
 	void processSquawkQueue();
 	bool callCcamsSquawk(const string& callsign);
 

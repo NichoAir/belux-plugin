@@ -1,0 +1,108 @@
+{
+    "API_timeout": 700,
+    "debug_mode": false,
+    "on_gate_change": "quiet",
+    "functionalities": {
+        "fetch_gates": true,
+        "set_initial_climb": true,
+        "mach_visualisation": false
+    },
+    "vspeed": {
+        "threshold": 300
+    },
+    "coverage": {
+        "EBBR_APP": [
+            "EBBR",
+            "EBAW",
+            "EBCI"
+        ],
+        "EBBR_*_APP": [
+            "EBBR",
+            "EBAW",
+            "EBCI"
+        ]
+    },
+    "requests": {
+        "caution_minutes": 5,
+        "warning_minutes": 10
+    },
+    "intersection": {
+        "able_color": [
+            255,
+            220,
+            0
+        ],
+        "set_color": [
+            0,
+            220,
+            0
+        ],
+        "list": {
+            "EBBR": {
+                "25R": [
+                    "W41",
+                    "W42",
+                    "B1",
+                    "B3",
+                    "B5",
+                    "A1"
+                ],
+                "07L": [
+                    "B10",
+                    "B9",
+                    "B8",
+                    "B7",
+                    "B6",
+                    "A7",
+                    "A6",
+                    "A3"
+                ],
+                "19": [
+                    "W41",
+                    "W42",
+                    "E7",
+                    "E6",
+                    "E5",
+                    "A1"
+                ],
+                "01": [
+                    "D2",
+                    "E1",
+                    "E3",
+                    "E4"
+                ],
+                "25L": [
+                    "C1",
+                    "C2",
+                    "C3",
+                    "C4"
+                ],
+                "07R": [
+                    "P9",
+                    "C6",
+                    "PSNH",
+                    "PSN1",
+                    "PSN2"
+                ]
+            },
+            "EBCI": {
+                "24": [
+                    "N7",
+                    "N6",
+                    "N5",
+                    "S4",
+                    "S3"
+                ],
+                "06": [
+                    "N1",
+                    "N2",
+                    "N3",
+                    "N4",
+                    "S1",
+                    "S2",
+                    "S3"
+                ]
+            }
+        }
+    }
+}
